@@ -59,6 +59,7 @@ export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps)
     setLoading(true)
     setLoadingStep(0)
     setError(null)
+    onTalkingChange?.(true)
     setValue('')
     setTurns((current) => [
       ...current,
@@ -93,6 +94,7 @@ export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps)
       setTurns((current) => current.filter((turn) => turn.id !== turnId))
       setValue(nextQuestion)
       setError(err instanceof Error ? err.message : 'Failed to ask Jira')
+      onTalkingChange?.(false)
     } finally {
       setLoading(false)
     }

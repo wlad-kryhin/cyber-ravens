@@ -35,7 +35,7 @@ export default function AskAnswer({ turn, onProgress, onTalkingChange }: AskAnsw
       <p className="chat-turn__question">{turn.question}</p>
 
       {turn.pending ? (
-        <p className="chat-turn__pending">Looking through Jira…</p>
+        <PendingAnswer onTalkingChange={onTalkingChange} />
       ) : (
         <TypedAnswer
           key={`${turn.id}-${turn.answer}`}
@@ -46,6 +46,18 @@ export default function AskAnswer({ turn, onProgress, onTalkingChange }: AskAnsw
       )}
     </motion.article>
   )
+}
+
+function PendingAnswer({
+  onTalkingChange,
+}: {
+  onTalkingChange?: (talking: boolean) => void
+}) {
+  useEffect(() => {
+    onTalkingChange?.(true)
+  }, [onTalkingChange])
+
+  return <p className="chat-turn__pending">Looking through Jira…</p>
 }
 
 function TypedAnswer({ turn, onProgress, onTalkingChange }: AskAnswerProps) {
