@@ -16,6 +16,132 @@
   padding: 2rem;
 }
 
+/* ── Logo ── */
+
+.logo {
+  position: fixed;
+  top: 1.5rem;
+  left: 1.75rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1.35rem 0.85rem 1rem;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 14px;
+  background: rgba(10, 10, 18, 0.72);
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+  user-select: none;
+  box-shadow:
+    0 0 24px rgba(139, 92, 246, 0.12),
+    inset 0 0 20px rgba(6, 182, 212, 0.04);
+}
+
+.logo-glow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at 30% 80%,
+    rgba(6, 182, 212, 0.18) 0%,
+    rgba(139, 92, 246, 0.1) 40%,
+    transparent 75%
+  );
+  pointer-events: none;
+}
+
+.logo-text {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  line-height: 1;
+}
+
+.logo-wordmark {
+  display: block;
+  height: 1.5rem;
+  width: auto;
+  filter: brightness(0) invert(1) drop-shadow(0 0 10px rgba(139, 92, 246, 0.35));
+}
+
+.logo-divider {
+  display: block;
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(139, 92, 246, 0.5), rgba(6, 182, 212, 0.8), transparent);
+  transform-origin: left;
+}
+
+.logo-title {
+  display: flex;
+  align-items: baseline;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, #67e8f9, #c4b5fd, #06b6d4, #a78bfa);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: logo-gradient 4s ease infinite;
+}
+
+.logo-title__char {
+  display: inline-block;
+}
+
+.logo-title__space {
+  display: inline-block;
+  width: 0.35em;
+}
+
+@keyframes logo-gradient {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.logo-scan {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 45%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(6, 182, 212, 0.1),
+    rgba(255, 255, 255, 0.08),
+    transparent
+  );
+  pointer-events: none;
+}
+
+@media (max-width: 480px) {
+  .logo {
+    top: 1rem;
+    left: 1rem;
+    padding: 0.7rem 1rem 0.7rem 0.85rem;
+    gap: 0.75rem;
+  }
+
+  .logo-wordmark {
+    height: 1.2rem;
+  }
+
+  .logo-title {
+    font-size: 0.95rem;
+    letter-spacing: 0.1em;
+  }
+}
+
 /* ── Background ── */
 
 .background {
