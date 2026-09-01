@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import idleLogo from '../assets/logo-idle.png'
-import thinkingRaven from '../assets/cyber_ravens_thinking.gif'
+import thinkingRaven from '../assets/thinkingraven.png'
 import talkingRaven from '../assets/cyber_ravens_talking.gif'
 
 export type RavenMood = 'idle' | 'thinking' | 'talking'

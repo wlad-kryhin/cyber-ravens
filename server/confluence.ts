@@ -1,3 +1,5 @@
+import { featureTerms } from './systems.js'
+
 export interface ConfluenceDoc {
   id: string
   title: string
@@ -11,6 +13,7 @@ export interface ConfluenceDoc {
 export interface ConfluencePageDetail extends ConfluenceDoc {
   type: string
   body: string
+  spaceKey?: string
 }
 
 interface ConfluenceSearchResult {
@@ -25,7 +28,7 @@ interface ConfluenceSearchResult {
   excerpt?: string
   url?: string
   lastModified?: string
-  resultGlobalContainer?: { title?: string }
+  resultGlobalContainer?: { title?: string; displayUrl?: string }
 }
 
 function confluenceAuth(env: Record<string, string>) {
@@ -57,17 +60,28 @@ export function buildCql(
   query: string,
   modifiedCql?: string | null,
   spaceKey?: string,
+  systems: string[] = [],
 ): string {
   const trimmed = query.trim()
-  const escaped = escapeCql(trimmed)
-  const parts = [
-    'type IN (page, blogpost)',
-    `(siteSearch ~ "${escaped}" OR title ~ "${escaped}" OR text ~ "${escaped}")`,
-  ]
+  const system = systems[0]
+  const rest = system ? featureTerms(trimmed, systems).join(' ') : trimmed
+  const parts = ['type = page']
 
-  if (spaceKey) parts.push(`space = "${escapeCql(spaceKey)}"`)
+  if (spaceKey) {
+    parts.push(`space = "${escapeCql(spaceKey)}"`)
+  } else if (system) {
+    parts.push(`title ~ "${escapeCql(system)}"`)
+  }
+
+  if (rest.trim().length > 1) {
+    const escaped = escapeCql(rest.trim())
+    parts.push(`(title ~ "${escaped}" OR text ~ "${escaped}")`)
+  } else if (!system && trimmed.length > 1) {
+    const escaped = escapeCql(trimmed)
+    parts.push(`(title ~ "${escaped}" OR text ~ "${escaped}")`)
+  }
+
   if (modifiedCql) parts.push(modifiedCql)
-
   return parts.join(' AND ')
 }
 
@@ -116,6 +130,7 @@ function mapSearchResult(
     updatedBy: '',
     type: result.content?.type === 'blogpost' ? 'Blog' : 'Page',
     body: '',
+    spaceKey: result.content?.space?.key || '',
   }
 }
 
@@ -195,6 +210,7 @@ export async function searchConfluencePages(
   env: Record<string, string>,
   maxResults = 8,
   modifiedCql?: string | null,
+  systems: string[] = [],
 ): Promise<ConfluencePageDetail[]> {
   const spaceKey = env.CONFLUENCE_SPACE_KEY?.trim() || undefined
   const trimmed = query.trim()
@@ -202,7 +218,7 @@ export async function searchConfluencePages(
 
   try {
     return await searchConfluenceByCql(
-      buildCql(trimmed, modifiedCql, spaceKey),
+      buildCql(trimmed, modifiedCql, spaceKey, systems),
       env,
       maxResults,
     )
@@ -215,7 +231,8 @@ export async function searchConfluencePages(
     const escaped = escapeCql(trimmed)
     const fallback = [
       'type = page',
-      `(title ~ "${escaped}" OR text ~ "${escaped}")`,
+      systems[0] ? `title ~ "${escapeCql(systems[0])}"` : '',
+      `title ~ "${escaped}"`,
       spaceKey ? `space = "${escapeCql(spaceKey)}"` : '',
       modifiedCql ?? '',
     ]

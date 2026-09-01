@@ -12,17 +12,25 @@ import { cursorJson } from './cursor.js'
 import {
   assertJiraAccess,
   fetchRecentChanges,
-  searchJiraByJql,
+  listJiraProjects,
   searchJiraIssuesDetailed,
   type BugTask,
   type JiraIssueDetail,
+  type JqlOptions,
 } from './jira.js'
+import {
+  detectStatusIntent,
+  detectSystems,
+  featureTerms,
+  projectsForSystems,
+  type StatusIntent,
+} from './systems.js'
 
-const MAX_QUERIES = 6
-const MAX_ISSUES = 12
-const MAX_DOCS = 8
+const MAX_QUERIES = 3
+const MAX_ISSUES = 8
+const MAX_DOCS = 4
 const RESULTS_PER_QUERY = 8
-const RESULTS_PER_DOC_QUERY = 6
+const RESULTS_PER_DOC_QUERY = 5
 
 export interface AskResult {
   answer: string
@@ -44,7 +52,11 @@ export interface ConversationTurn {
 
 interface SearchPlan {
   queries: string[]
+  systems: string[]
+  projectKeys: string[]
   updatedJql: string | null
+  statusJql: string | null
+  statusIntent: StatusIntent
   timeLabel: string | null
   timeDays: number | null
   changeIntent: boolean
@@ -164,19 +176,52 @@ function expandSynonyms(tokens: string[]): string[] {
   return extra
 }
 
+const WORD_NUMBERS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  ett: 1,
+  en: 1,
+  två: 2,
+  tva: 2,
+  tre: 3,
+  fyra: 4,
+  fem: 5,
+  sex: 6,
+  sju: 7,
+  åtta: 8,
+  atta: 8,
+  nio: 9,
+  tio: 10,
+}
+
+function parseAmount(value: string): number {
+  if (/^\d+$/.test(value)) return Number(value)
+  return WORD_NUMBERS[value] ?? 0
+}
+
 function parseTimeWindow(question: string): TimeWindow | null {
   const q = question.toLowerCase()
   const numbered = q.match(
-    /\b(?:last|past|senaste)\s+(\d+)\s+(day|days|week|weeks|month|months|year|years|dag|dagar|vecka|veckor|månad|manad|månader|manader|år|ar)\b/,
+    /\b(?:last|past|senaste)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|ett|en|två|tva|tre|fyra|fem|sex|sju|åtta|atta|nio|tio)\s+(day|days|week|weeks|month|months|year|years|dag|dagar|vecka|veckor|månad|manad|månader|manader|år|ar)\b/,
   )
   if (numbered) {
-    const amount = Number(numbered[1])
+    const amount = parseAmount(numbered[1])
     const unit = numbered[2]
     const days = amount * (UNIT_DAYS[unit] ?? 1)
-    return {
-      label: `the last ${amount} ${unit}`,
-      jql: `updated >= -${days}d`,
-      days,
+    if (amount > 0) {
+      return {
+        label: `the last ${amount} ${unit}`,
+        jql: `updated >= -${days}d`,
+        days,
+      }
     }
   }
 
@@ -206,23 +251,6 @@ function hasChangeIntent(question: string): boolean {
   return /\b(change|changes|changed|update|updated|updates|fix|fixed|deploy|released|ändr|andring|andrat)\b/i.test(
     question,
   )
-}
-
-function inferFallbackJql(question: string, updatedJql: string | null): string | null {
-  const q = question.toLowerCase()
-  const isListing = /\b(vilka|alla|show|list|öppna|oppna|open|recent|senaste|currently|just nu)\b/.test(
-    q,
-  )
-  if (!isListing && !updatedJql) return null
-
-  const parts = [updatedJql ?? 'updated >= -365d']
-  if (/\b(open|öppna|oppna|unresolved)\b/.test(q)) {
-    parts.push('statusCategory != Done')
-  } else if (/\b(done|klara|closed|resolved)\b/.test(q) && !hasChangeIntent(question)) {
-    parts.push('statusCategory = Done')
-  }
-
-  return `${parts.join(' AND ')} ORDER BY updated DESC`
 }
 
 function decomposeHeuristic(question: string): string[] {
@@ -279,6 +307,9 @@ function toTask(issue: JiraIssueDetail): BugTask {
     resolved: issue.resolved,
     updatedBy: issue.updatedBy,
     assignee: issue.assignee,
+    statusName: issue.statusName,
+    projectKey: issue.projectKey,
+    resolution: issue.resolution,
   }
 }
 
@@ -292,6 +323,15 @@ function topicLabel(history: ConversationTurn[], issues: JiraIssueDetail[]): str
   return inheritedTopic(history)[0] ?? ''
 }
 
+function countByStatus(issues: JiraIssueDetail[]) {
+  return {
+    done: issues.filter((issue) => issue.status === 'done').length,
+    wontDo: issues.filter((issue) => issue.status === 'wont-do').length,
+    planned: issues.filter((issue) => issue.status === 'backlog' || issue.status === 'open').length,
+    inProgress: issues.filter((issue) => issue.status === 'in-progress').length,
+  }
+}
+
 function synthesizeHeuristic(
   question: string,
   issues: JiraIssueDetail[],
@@ -299,70 +339,99 @@ function synthesizeHeuristic(
   timeLabel: string | null,
   outsideWindow: boolean,
   history: ConversationTurn[] = [],
+  systems: string[] = [],
+  statusIntent: StatusIntent = 'any',
 ): string {
   const sv = isSwedish(`${history.map((turn) => turn.question).join(' ')} ${question}`)
-  const primary = issues[0]
-  const when = dateLabel(primary?.updated)
-  const resolved = dateLabel(primary?.resolved)
-  const who = primary?.updatedBy
-  const changeLine = primary?.changes[0]
-  const topic = topicLabel(history, issues)
-  const docsNote = pages.length
-    ? sv
-      ? ` Relaterad dokumentation i Confluence listas nedan.`
-      : ` Related Confluence documentation is listed below.`
-    : ''
+  const topic = systems[0] || topicLabel(history, issues)
+  const counts = countByStatus(issues)
+  const when = dateLabel(issues.find((issue) => issue.status === 'done')?.updated ?? issues[0]?.updated)
+  const who = issues.find((issue) => issue.status === 'done')?.updatedBy ?? issues[0]?.updatedBy
 
   if (issues.length === 0 && pages.length === 0) {
-    if (timeLabel) {
-      return sv
-        ? `Jag hittade inga Jira-ärenden eller Confluence-sidor${topic ? ` om ${topic}` : ''} ${timeLabel.replace('the last', 'den senaste')}. Prova ett ärendenummer eller bredare termer.`
-        : `I could not find Jira issues or Confluence pages${topic ? ` about ${topic}` : ''} in ${timeLabel}. Try an issue key or broader terms.`
+    if (sv) {
+      return timeLabel
+        ? `Nej — jag hittade inget i ${topic || 'Jira/Confluence'} ${timeLabel.replace('the last', 'den senaste')}.`
+        : `Nej — jag hittade inga träffar${topic ? ` för ${topic}` : ''} som svarar på frågan.`
     }
+    return timeLabel
+      ? `No — I found nothing in ${topic || 'Jira/Confluence'} in ${timeLabel}.`
+      : `No — I found nothing${topic ? ` for ${topic}` : ''} that answers this question.`
+  }
+
+  if (statusIntent === 'shipped' && counts.done > 0) {
     return sv
-      ? `Jag hittade inga Jira-ärenden eller Confluence-sidor${topic ? ` om ${topic}` : ''} som svarar på frågan. Prova ett ärendenummer eller mer specifika termer.`
-      : `I could not find Jira issues or Confluence pages${topic ? ` about ${topic}` : ''} that answer this question. Try an issue key or more specific terms.`
+      ? `Ja — det finns ${counts.done} klara (Done) ärenden${topic ? ` i ${topic}` : ''}${timeLabel ? ` ${timeLabel.replace('the last', 'den senaste')}` : ''}. ${counts.wontDo ? `${counts.wontDo} är Won't do. ` : ''}${counts.inProgress || counts.planned ? `Det finns också pågående/planerat arbete. ` : ''}De listas nedan.`
+      : `Yes — there are ${counts.done} completed (Done) issue${counts.done === 1 ? '' : 's'}${topic ? ` in ${topic}` : ''}${timeLabel ? ` in ${timeLabel}` : ''}. ${counts.wontDo ? `${counts.wontDo} are Won't do. ` : ''}${counts.inProgress || counts.planned ? `There is also in-progress or planned work. ` : ''}They are listed below.`
+  }
+
+  if (statusIntent === 'shipped' && counts.done === 0) {
+    const extra = [
+      counts.wontDo
+        ? sv
+          ? `Det finns ${counts.wontDo} ärende${counts.wontDo === 1 ? '' : 'n'} markerade Won't do (beslutat att inte göra).`
+          : `${counts.wontDo} issue${counts.wontDo === 1 ? '' : 's'} are marked Won't do (decided against).`
+        : '',
+      counts.planned || counts.inProgress
+        ? sv
+          ? `Det finns planerat eller pågående arbete, men inget klart.`
+          : `There is planned or in-progress work, but nothing completed.`
+        : '',
+      pages.length
+        ? sv
+          ? `Relaterad dokumentation listas nedan.`
+          : `Related documentation is listed below.`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+
+    return sv
+      ? `Nej — inga klara (Done) ändringar${topic ? ` i ${topic}` : ''}${timeLabel ? ` ${timeLabel.replace('the last', 'den senaste')}` : ''}. ${extra}`.trim()
+      : `No — no completed (Done) changes${topic ? ` in ${topic}` : ''}${timeLabel ? ` in ${timeLabel}` : ''}. ${extra}`.trim()
   }
 
   if (issues.length === 0) {
     return sv
-      ? `Jag hittade inga Jira-ärenden${topic ? ` om ${topic}` : ''}, men det finns relaterad dokumentation i Confluence.`
-      : `I could not find Jira issues${topic ? ` about ${topic}` : ''}, but related Confluence documentation is listed below.`
+      ? `Nej — inga Jira-ärenden${topic ? ` för ${topic}` : ''} som svarar på frågan. Det finns dokumentation i Confluence nedan.`
+      : `No matching Jira issues${topic ? ` for ${topic}` : ''}. Related Confluence pages are listed below.`
   }
+
+  const statusNote = sv
+    ? `${counts.done} klara, ${counts.wontDo} won't do, ${counts.inProgress} pågående, ${counts.planned} planerade.`
+    : `${counts.done} done, ${counts.wontDo} won't do, ${counts.inProgress} in progress, ${counts.planned} planned.`
 
   if (sv) {
     const lines: string[] = []
     if (outsideWindow && timeLabel) {
       lines.push(
-        `Inget matchade ${timeLabel.replace('the last', 'den senaste')}${topic ? ` för ${topic}` : ''}, men relaterade ärenden finns i listan nedan.`,
+        `Nej — inget matchade ${timeLabel.replace('the last', 'den senaste')}${topic ? ` för ${topic}` : ''}. Relaterade träffar utanför fönstret listas nedan.`,
       )
     } else {
       lines.push(
-        `Ja — jag hittade ${issues.length} relaterat${issues.length === 1 ? '' : 'e'} ärende${issues.length === 1 ? '' : 'n'} i Jira${topic ? ` om ${topic}` : ''}. De listas nedan.`,
+        `Jag hittade ${issues.length} ärende${issues.length === 1 ? '' : 'n'}${topic ? ` i ${topic}` : ''} som verkar svara på frågan. ${statusNote}`,
       )
     }
-    if (when && who) lines.push(`Det närmaste ärendet ändrades senast ${when} av ${who}.`)
-    else if (when) lines.push(`Det närmaste ärendet ändrades senast ${when}.`)
-    if (resolved) lines.push(`Det markerades klart ${resolved}.`)
-    if (changeLine) lines.push(`Senaste ändring: ${changeLine}.`)
-    return `${lines.join(' ')}${docsNote}`
+    if (when && who) lines.push(`Senaste klara/uppdaterade ärendet: ${when} av ${who}.`)
+    else if (when) lines.push(`Senast uppdaterat ${when}.`)
+    if (pages.length) lines.push('Relaterad dokumentation listas nedan.')
+    return lines.join(' ')
   }
 
   const lines: string[] = []
   if (outsideWindow && timeLabel) {
     lines.push(
-      `Nothing matched in ${timeLabel}${topic ? ` for ${topic}` : ''}. Related issues are listed below.`,
+      `No — nothing matched in ${timeLabel}${topic ? ` for ${topic}` : ''}. Related hits outside that window are listed below.`,
     )
   } else {
     lines.push(
-      `Yes — I found ${issues.length} related issue${issues.length === 1 ? '' : 's'} in Jira${topic ? ` about ${topic}` : ''}. They are listed below.`,
+      `I found ${issues.length} issue${issues.length === 1 ? '' : 's'}${topic ? ` in ${topic}` : ''} that appear to answer the question. ${statusNote}`,
     )
   }
-  if (when && who) lines.push(`The closest match was last updated ${when} by ${who}.`)
-  else if (when) lines.push(`The closest match was last updated ${when}.`)
-  if (resolved) lines.push(`It was resolved ${resolved}.`)
-  if (changeLine) lines.push(`Latest change: ${changeLine}.`)
-  return `${lines.join(' ')}${docsNote}`
+  if (when && who) lines.push(`Latest completed/updated issue: ${when} by ${who}.`)
+  else if (when) lines.push(`Last updated ${when}.`)
+  if (pages.length) lines.push('Related documentation is listed below.')
+  return lines.join(' ')
 }
 
 function historyText(history: ConversationTurn[]): string {
@@ -409,23 +478,6 @@ function inheritedTopic(history: ConversationTurn[]): string[] {
   return unique(phrases)
 }
 
-function applyStickyTopic(queries: string[], topic: string[]): string[] {
-  const primary = topic[0]
-  if (!primary) return queries
-
-  const topicTerms = unique(topic.flatMap((phrase) => keywords(phrase))).map((term) =>
-    term.toLowerCase(),
-  )
-
-  const anchored = queries.map((query) => {
-    if (/^[A-Z][A-Z0-9]+-\d+$/i.test(query)) return query
-    const hasTopic = topicTerms.some((term) => query.toLowerCase().includes(term))
-    return hasTopic ? query : `${primary} ${query}`.trim()
-  })
-
-  return unique([...anchored, primary])
-}
-
 function normalizeHistory(value: unknown): ConversationTurn[] {
   if (!Array.isArray(value)) return []
 
@@ -454,7 +506,7 @@ function normalizeHistory(value: unknown): ConversationTurn[] {
 function issueContext(issue: JiraIssueDetail): string {
   const parts = [
     `${issue.id} [${issue.type}/${issue.priority}] ${issue.title}`,
-    `Product: ${issue.product}. Status: ${issue.statusName} (${issue.status}).`,
+    `Product: ${issue.product}${issue.projectKey ? ` (${issue.projectKey})` : ''}. Status: ${issue.statusName} (${issue.status})${issue.resolution ? `, resolution ${issue.resolution}` : ''}.`,
   ]
   if (issue.created) parts.push(`Created: ${dateLabel(issue.created)}.`)
   if (issue.updated) {
@@ -488,6 +540,123 @@ function pageContext(page: ConfluencePageDetail): string {
   if (page.excerpt) parts.push(`Excerpt: ${truncate(page.excerpt, 280)}`)
   if (page.body) parts.push(`Content: ${truncate(page.body, 1200)}`)
   return parts.join(' ')
+}
+
+function statusJqlFor(intent: StatusIntent): string | null {
+  if (intent === 'wont-do') {
+    return 'status in ("Won\'t Do", "Won\'t do", "Wont do", "Wont be Done", "Wont fix", "Ei toteuteta", "Rejected", "Declined")'
+  }
+  if (intent === 'in-progress') return 'statusCategory = "In Progress"'
+  if (intent === 'planned') return 'statusCategory != Done'
+  return null
+}
+
+function matchesSystem(
+  issue: JiraIssueDetail,
+  systems: string[],
+  projectKeys: string[],
+): boolean {
+  if (systems.length === 0 && projectKeys.length === 0) return true
+  if (issue.projectKey && projectKeys.includes(issue.projectKey)) return true
+  const hay = `${issue.product} ${issue.projectKey ?? ''}`.toLowerCase()
+  return systems.some((system) => hay.includes(system.toLowerCase()))
+}
+
+function matchesStatusIntent(issue: JiraIssueDetail, intent: StatusIntent): boolean {
+  if (intent === 'any') return true
+  if (intent === 'shipped') return issue.status === 'done' || issue.status === 'wont-do'
+  if (intent === 'wont-do') return issue.status === 'wont-do'
+  if (intent === 'planned') return issue.status === 'backlog' || issue.status === 'open'
+  if (intent === 'in-progress') return issue.status === 'in-progress'
+  return true
+}
+
+function matchesAnyQuery(haystack: string, queries: string[], systems: string[]): boolean {
+  const lists = queries
+    .filter((query) => !/^[A-Z][A-Z0-9]+-\d+$/i.test(query.trim()))
+    .map((query) => featureTerms(query, systems))
+    .filter((terms) => terms.length > 0)
+  if (lists.length === 0) return true
+  const hay = haystack.toLowerCase()
+  return lists.some((terms) => terms.every((term) => hay.includes(term.toLowerCase())))
+}
+
+function statusRank(status: JiraIssueDetail['status']): number {
+  if (status === 'done') return 0
+  if (status === 'in-progress') return 1
+  if (status === 'wont-do') return 2
+  if (status === 'open') return 3
+  return 4
+}
+
+function filterIssues(
+  issues: JiraIssueDetail[],
+  plan: SearchPlan,
+): JiraIssueDetail[] {
+  const seen = new Set<string>()
+  const scoped = issues.filter((issue) => {
+    if (seen.has(issue.id)) return false
+    seen.add(issue.id)
+    return matchesSystem(issue, plan.systems, plan.projectKeys)
+  })
+  const byStatus =
+    plan.statusIntent === 'shipped' || plan.statusIntent === 'any'
+      ? scoped
+      : scoped.filter((issue) => matchesStatusIntent(issue, plan.statusIntent))
+
+  const topical = byStatus.filter((issue) =>
+    matchesAnyQuery(`${issue.title} ${issue.description}`, plan.queries, plan.systems),
+  )
+  const chosen = topical.length > 0 ? topical : byStatus
+  const terms = unique(plan.queries.flatMap((query) => featureTerms(query, plan.systems)))
+
+  return chosen
+    .sort((a, b) => {
+      if (plan.statusIntent === 'shipped') {
+        const byStatusRank = statusRank(a.status) - statusRank(b.status)
+        if (byStatusRank !== 0) return byStatusRank
+      }
+      const aTitle = terms.filter((term) => a.title.toLowerCase().includes(term.toLowerCase())).length
+      const bTitle = terms.filter((term) => b.title.toLowerCase().includes(term.toLowerCase())).length
+      return bTitle - aTitle
+    })
+    .slice(0, MAX_ISSUES)
+}
+
+function filterPages(
+  pages: ConfluencePageDetail[],
+  plan: SearchPlan,
+): ConfluencePageDetail[] {
+  const scoped = pages.filter((page) => {
+    if (plan.systems.length === 0) return true
+    const hay = `${page.space} ${page.title}`.toLowerCase()
+    return plan.systems.some((system) => hay.includes(system.toLowerCase()))
+  })
+  const topical = scoped.filter((page) =>
+    matchesAnyQuery(`${page.title} ${page.excerpt ?? ''} ${page.body}`, plan.queries, plan.systems),
+  )
+  const chosen = topical.length > 0 ? topical : scoped
+  const terms = unique(plan.queries.flatMap((query) => featureTerms(query, plan.systems)))
+
+  return chosen
+    .sort((a, b) => {
+      const aTitle = terms.filter((term) => a.title.toLowerCase().includes(term.toLowerCase())).length
+      const bTitle = terms.filter((term) => b.title.toLowerCase().includes(term.toLowerCase())).length
+      return bTitle - aTitle
+    })
+    .slice(0, MAX_DOCS)
+}
+
+function applySystem(queries: string[], systems: string[]): string[] {
+  const system = systems[0]
+  if (!system) return queries
+
+  return unique(
+    queries.map((query) => {
+      if (/^[A-Z][A-Z0-9]+-\d+$/i.test(query)) return query
+      return query.toLowerCase().includes(system.toLowerCase()) ? query : `${system} ${query}`.trim()
+    }),
+  )
 }
 
 async function chatJson(
@@ -549,41 +718,42 @@ async function decomposeQuestion(
   question: string,
   env: Record<string, string>,
   history: ConversationTurn[],
+  projects: { key: string; name: string }[],
 ): Promise<SearchPlan> {
   const corpus = conversationCorpus(history, question)
   const time =
     parseTimeWindow(question) ??
     parseTimeWindow(history.map((turn) => turn.question).join(' ')) ??
     parseTimeWindow(history.map((turn) => turn.timeLabel ?? '').join(' '))
-  const topic = inheritedTopic(history)
+  const systems = detectSystems(corpus, projects)
+  const projectKeys = projectsForSystems(systems, projects).map((project) => project.key)
   const searchText = history.length > 0 ? corpus : question
   const fallback = unique([
-    ...applyStickyTopic(decomposeHeuristic(question), topic),
-    ...decomposeHeuristic(searchText),
+    ...applySystem(decomposeHeuristic(question), systems),
     ...extractIssueKeys(corpus),
-    ...topic,
   ]).slice(0, MAX_QUERIES)
   const changeIntent = hasChangeIntent(corpus)
+  const statusIntent = detectStatusIntent(corpus)
 
   try {
     const parsed = await chatJson(
       env,
       [
-        'Turn a natural-language support question into a Jira search plan.',
+        'Turn a natural-language support question into a Jira/Confluence search plan.',
         'This is a follow-up conversation when previous questions are provided.',
-        'Always keep the same product, system and feature from earlier turns unless the user clearly names a different one.',
-        'Put that product/system in every query, even if the latest question is only "who?", "when?" or "what changed?".',
-        'Return JSON only: { "queries": string[], "timeDays": number | null, "timeLabel": string | null, "changeIntent": boolean }.',
-        'queries: 1-4 short Jira text-search phrases, not full sentences.',
-        'Keep product names (e.g. Varbi) and feature words (e.g. login).',
-        'Do not put time words or verbs like changes/done into queries.',
-        'timeDays: 7/30/365 when the user asked for last week/month/year in this turn or an earlier turn, otherwise null.',
+        'Keep the same product/system from earlier turns unless the user names a different one.',
+        'Return JSON only: { "systems": string[], "queries": string[], "timeDays": number | null, "timeLabel": string | null, "statusIntent": "shipped"|"wont-do"|"planned"|"in-progress"|"any", "changeIntent": boolean }.',
+        'systems: product names actually named (e.g. Varbi). Empty if none. Never add extra products.',
+        'queries: 1-2 short feature phrases. If the user only asked whether a system changed recently, queries may be empty — do not search for the word "changes".',
+        'Include the feature (e.g. login) when named. Do not put time words, "changes", "updated" or "made" into queries.',
+        'statusIntent: shipped = the user asked what was changed/done; wont-do = declined work; planned = backlog; in-progress = currently being worked; any = unspecified.',
+        'timeDays: 21 for last three weeks, 7/30/365 for week/month/year, otherwise null.',
         'If any message contains an issue key like ABC-123, include it as its own query.',
       ].join(' '),
       history.length > 0
         ? [
             `Previous conversation:\n${historyText(history)}`,
-            topic.length > 0 ? `Sticky topic to keep in every query:\n${topic.slice(0, 4).join('\n')}` : '',
+            systems.length > 0 ? `Detected system:\n${systems.join(', ')}` : '',
             `Latest question:\n${question}`,
           ]
             .filter(Boolean)
@@ -594,6 +764,11 @@ async function decomposeQuestion(
     const queries = Array.isArray(parsed?.queries)
       ? parsed.queries.filter((item): item is string => typeof item === 'string')
       : []
+    const parsedSystems = Array.isArray(parsed?.systems)
+      ? parsed.systems.filter((item): item is string => typeof item === 'string')
+      : []
+    const mergedSystems = unique([...systems, ...detectSystems(parsedSystems.join(' '), projects)])
+    const mergedKeys = projectsForSystems(mergedSystems, projects).map((project) => project.key)
     const cursorDays =
       typeof parsed?.timeDays === 'number' && parsed.timeDays > 0
         ? Math.round(parsed.timeDays)
@@ -608,18 +783,31 @@ async function decomposeQuestion(
           days: cursorDays,
         }
       : null
-    const window = cursorTime ?? time
+    const window = time ?? cursorTime
     const cursorChange =
       typeof parsed?.changeIntent === 'boolean' ? parsed.changeIntent : changeIntent
+    const parsedIntent = parsed?.statusIntent
+    const intent: StatusIntent =
+      parsedIntent === 'shipped' ||
+      parsedIntent === 'wont-do' ||
+      parsedIntent === 'planned' ||
+      parsedIntent === 'in-progress' ||
+      parsedIntent === 'any'
+        ? parsedIntent
+        : statusIntent
 
     const merged = unique([
       ...extractIssueKeys(corpus),
-      ...applyStickyTopic(queries, topic),
-      ...fallback,
+      ...applySystem(queries, mergedSystems),
     ])
+    const finalQueries = (merged.length > 0 ? merged : fallback).slice(0, MAX_QUERIES)
     return {
-      queries: (merged.length > 0 ? merged : [searchText.trim()]).slice(0, MAX_QUERIES),
+      queries: finalQueries.length > 0 ? finalQueries : [searchText.trim()],
+      systems: mergedSystems,
+      projectKeys: mergedKeys,
       updatedJql: window?.jql ?? null,
+      statusJql: statusJqlFor(intent),
+      statusIntent: intent,
       timeLabel: window?.label ?? null,
       timeDays: window?.days ?? null,
       changeIntent: cursorChange,
@@ -627,7 +815,11 @@ async function decomposeQuestion(
   } catch {
     return {
       queries: fallback,
+      systems,
+      projectKeys,
       updatedJql: time?.jql ?? null,
+      statusJql: statusJqlFor(statusIntent),
+      statusIntent,
       timeLabel: time?.label ?? null,
       timeDays: time?.days ?? null,
       changeIntent,
@@ -643,8 +835,19 @@ async function synthesizeAnswer(
   timeLabel: string | null,
   outsideWindow: boolean,
   history: ConversationTurn[],
+  systems: string[],
+  statusIntent: StatusIntent,
 ): Promise<string> {
-  const fallback = synthesizeHeuristic(question, issues, pages, timeLabel, outsideWindow, history)
+  const fallback = synthesizeHeuristic(
+    question,
+    issues,
+    pages,
+    timeLabel,
+    outsideWindow,
+    history,
+    systems,
+    statusIntent,
+  )
 
   if (issues.length === 0 && pages.length === 0) return fallback
 
@@ -652,23 +855,26 @@ async function synthesizeAnswer(
     const parsed = await chatJson(
       env,
       [
-        'Answer the user using only the Jira issues and Confluence pages provided and the prior conversation.',
-        'Treat this as one ongoing thread: keep the same system/product from earlier questions unless the user switched.',
+        'Answer using only the Jira issues and Confluence pages provided.',
+        'Be strictly truthful. "No" is a good answer when the evidence does not support a yes.',
+        'If a system was named, ignore anything that is not that system.',
+        'If the user asked about changes in a time window, look at issues updated in that window for the named system.',
+        'Done/Completed/Shipped = finished work. Won\'t Do = decided not to do, not a shipped change. Backlog/To Do = planned. In Progress = ongoing.',
+        'If Done items exist in the window, the answer is yes, work was completed. Do not answer no.',
+        'If there is only backlog/in-progress activity, say that tickets were updated but nothing is marked Done.',
+        'Only answer no when there are no matching issues at all.',
         'Return JSON: { "answer": string }.',
         'Write 2-5 short sentences in the same language as the question.',
-        'Do not list issue keys or dump several tickets or page titles into one sentence.',
-        'The UI already shows clickable lists of Jira issues and Confluence docs under your answer.',
-        'If Confluence pages are present, say whether they document the asked topic.',
-        'Mention who made the latest Jira change when that name is available.',
-        'You may mention dates and what changed. Refer to "the issues below" and "the docs below" instead of enumerating titles.',
-        'If the issues are outside the requested time window, say that clearly.',
-        'Do not invent facts that are not in the issues or pages.',
+        'Do not enumerate issue keys or page titles; the UI lists them.',
+        'Do not invent facts.',
       ].join(' '),
       [
         history.length > 0 ? `Previous conversation:\n${historyText(history)}` : '',
         `Question:\n${question}`,
+        systems.length > 0 ? `Named system(s): ${systems.join(', ')}` : 'No specific system named.',
+        `Status intent: ${statusIntent}`,
         timeLabel ? `Requested time window: ${timeLabel}` : '',
-        outsideWindow ? 'Note: no matches inside the time window; issues below are older.' : '',
+        outsideWindow ? 'Note: no matches inside the time window; items below are older.' : '',
         issues.length > 0
           ? `Jira issues:\n${issues.map(issueContext).join('\n\n')}`
           : 'Jira issues: none',
@@ -687,13 +893,18 @@ async function synthesizeAnswer(
   }
 }
 
+function jiraQueryText(query: string, systems: string[]): string {
+  if (/^[A-Z][A-Z0-9]+-\d+$/i.test(query.trim())) return query.trim()
+  return featureTerms(query, systems).join(' ')
+}
+
 async function searchTextQuery(
   query: string,
   env: Record<string, string>,
-  updatedJql?: string | null,
+  options?: JqlOptions,
 ): Promise<JiraIssueDetail[]> {
   try {
-    return await searchJiraIssuesDetailed(query, env, RESULTS_PER_QUERY, updatedJql)
+    return await searchJiraIssuesDetailed(query, env, RESULTS_PER_QUERY, options)
   } catch (error) {
     const message = error instanceof Error ? error.message : ''
     if (message.includes('not configured') || message.includes('rejected the API token')) {
@@ -706,10 +917,13 @@ async function searchTextQuery(
 async function searchMerged(
   queries: string[],
   env: Record<string, string>,
-  updatedJql?: string | null,
+  options?: JqlOptions,
+  systems: string[] = [],
 ): Promise<JiraIssueDetail[]> {
+  const texts = unique(queries.map((query) => jiraQueryText(query, systems)).filter(Boolean))
+  const searchTexts = texts.length > 0 ? texts : ['']
   const batches = await Promise.all(
-    queries.map((query) => searchTextQuery(query, env, updatedJql)),
+    searchTexts.map((query) => searchTextQuery(query, env, options)),
   )
 
   const seen = new Set<string>()
@@ -734,9 +948,10 @@ function isIssueKeyQuery(query: string): boolean {
 async function searchConfluenceQuery(
   query: string,
   env: Record<string, string>,
+  systems: string[],
 ): Promise<ConfluencePageDetail[]> {
   try {
-    return await searchConfluencePages(query, env, RESULTS_PER_DOC_QUERY)
+    return await searchConfluencePages(query, env, RESULTS_PER_DOC_QUERY, null, systems)
   } catch {
     return []
   }
@@ -745,13 +960,14 @@ async function searchConfluenceQuery(
 async function searchConfluenceMerged(
   queries: string[],
   env: Record<string, string>,
+  systems: string[],
 ): Promise<ConfluencePageDetail[]> {
   const docQueries = unique(queries.filter((query) => !isIssueKeyQuery(query)))
   const searchQueries = (docQueries.length > 0 ? docQueries : queries).slice(0, MAX_QUERIES)
   if (searchQueries.length === 0) return []
 
   const batches = await Promise.all(
-    searchQueries.map((query) => searchConfluenceQuery(query, env)),
+    searchQueries.map((query) => searchConfluenceQuery(query, env, systems)),
   )
 
   const seen = new Set<string>()
@@ -797,37 +1013,54 @@ export async function askJiraQuestion(
   history: ConversationTurn[] = [],
 ): Promise<AskResult> {
   await assertJiraAccess(env)
+  const projects = await listJiraProjects(env).catch(() => [])
 
-  const plan = await decomposeQuestion(question, env, history)
-  const [jiraMatches, confluenceMatches] = await Promise.all([
-    plan.queries.length > 0
-      ? searchMerged(plan.queries, env, plan.updatedJql)
+  const plan = await decomposeQuestion(question, env, history, projects)
+  const jqlOptions: JqlOptions = {
+    updatedJql: plan.updatedJql,
+    projectKeys: plan.projectKeys,
+    statusJql: plan.statusJql,
+  }
+
+  const [recentMatches, doneMatches, confluenceMatches] = await Promise.all([
+    plan.queries.length > 0 || plan.projectKeys.length > 0
+      ? searchMerged(plan.queries, env, jqlOptions, plan.systems)
+      : Promise.resolve([] as JiraIssueDetail[]),
+    plan.statusIntent === 'shipped' && (plan.queries.length > 0 || plan.projectKeys.length > 0)
+      ? searchMerged(
+          plan.queries,
+          env,
+          { ...jqlOptions, statusJql: 'statusCategory = Done' },
+          plan.systems,
+        )
       : Promise.resolve([] as JiraIssueDetail[]),
     plan.queries.length > 0
-      ? searchConfluenceMerged(plan.queries, env)
+      ? searchConfluenceMerged(plan.queries, env, plan.systems)
       : Promise.resolve([] as ConfluencePageDetail[]),
   ])
 
-  let issues = jiraMatches
-  let pages = confluenceMatches
+  const jiraMatches = [...doneMatches, ...recentMatches]
+
+  let issues = filterIssues(jiraMatches, plan)
+  let pages = filterPages(confluenceMatches, plan)
   let outsideWindow = false
 
   if (issues.length === 0 && plan.updatedJql) {
-    const older = await searchMerged(plan.queries, env)
+    const older = filterIssues(
+      await searchMerged(
+        plan.queries,
+        env,
+        {
+          projectKeys: plan.projectKeys,
+          statusJql: plan.statusJql,
+        },
+        plan.systems,
+      ),
+      plan,
+    )
     if (older.length > 0) {
       issues = older
       outsideWindow = true
-    }
-  }
-
-  if (issues.length === 0) {
-    const fallbackJql = inferFallbackJql(conversationCorpus(history, question), plan.updatedJql)
-    if (fallbackJql) {
-      try {
-        issues = await searchJiraByJql(fallbackJql, env, MAX_ISSUES)
-      } catch {
-        issues = []
-      }
     }
   }
 
@@ -846,11 +1079,21 @@ export async function askJiraQuestion(
     plan.timeLabel,
     outsideWindow,
     history,
+    plan.systems,
+    plan.statusIntent,
   )
+
+  const cleaned = unique(
+    plan.queries
+      .map((query) => jiraQueryText(query, plan.systems))
+      .filter(Boolean),
+  )
+  const queries =
+    cleaned.length > 0 ? cleaned : plan.systems.length > 0 ? plan.systems : plan.queries
 
   return {
     answer,
-    queries: plan.queries,
+    queries,
     timeLabel: plan.timeLabel,
     tasks: issues.map(toTask),
     docs: pages.map(toConfluenceDoc),

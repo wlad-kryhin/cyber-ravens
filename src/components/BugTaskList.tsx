@@ -94,7 +94,7 @@ function TaskRow({ task }: { task: BugTask }) {
         <span className="task-item__title">{task.title}</span>
       </div>
       <span className={`task-status task-status--${task.status}`}>
-        {statusLabels[task.status]}
+        {task.statusName || statusLabels[task.status]}
       </span>
     </>
   )

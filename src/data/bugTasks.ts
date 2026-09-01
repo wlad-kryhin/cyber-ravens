@@ -1,4 +1,4 @@
-export type TaskStatus = 'done' | 'open' | 'in-progress'
+export type TaskStatus = 'done' | 'open' | 'in-progress' | 'wont-do' | 'backlog'
 
 export interface BugTask {
   id: string
@@ -11,10 +11,15 @@ export interface BugTask {
   resolved?: string
   updatedBy?: string
   assignee?: string
+  statusName?: string
+  projectKey?: string
+  resolution?: string
 }
 
 export const statusLabels: Record<TaskStatus, string> = {
   done: 'Done',
   open: 'Open',
   'in-progress': 'In progress',
+  'wont-do': "Won't do",
+  backlog: 'Backlog',
 }

@@ -344,6 +344,66 @@
   background: rgba(139, 92, 246, 0.22);
 }
 
+.raven-farewell {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2.5rem;
+  padding: 2rem;
+  background:
+    radial-gradient(ellipse at 50% 45%, rgba(18, 16, 31, 0.72) 0%, rgba(5, 5, 8, 0.94) 70%),
+    rgba(5, 5, 8, 0.88);
+  backdrop-filter: blur(10px);
+}
+
+.raven-farewell__message {
+  margin: 0;
+  max-width: 16ch;
+  text-align: center;
+  font-family: 'Orbitron', sans-serif;
+  font-size: clamp(2.4rem, 8vw, 5.5rem);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #e9d5ff;
+  text-shadow:
+    0 0 24px rgba(139, 92, 246, 0.7),
+    0 0 60px rgba(139, 92, 246, 0.35),
+    0 0 120px rgba(6, 182, 212, 0.2);
+}
+
+.new-question-btn--farewell {
+  padding: 0.85rem 1.6rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.thanks-btn {
+  display: block;
+  margin: 1rem 0 0;
+  padding: 0.5rem 1.1rem;
+  border: 1px solid rgba(6, 182, 212, 0.45);
+  border-radius: 999px;
+  background: rgba(6, 182, 212, 0.12);
+  color: #67e8f9;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.thanks-btn:hover {
+  background: rgba(6, 182, 212, 0.22);
+}
+
 .chat-thread {
   width: 100%;
   min-height: 0;
@@ -647,6 +707,18 @@ a.task-item__id:hover {
   border: 1px solid rgba(245, 158, 11, 0.35);
 }
 
+.task-status--wont-do {
+  color: #cbd5e1;
+  background: rgba(100, 116, 139, 0.16);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.task-status--backlog {
+  color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.14);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+}
+
 .task-item__excerpt {
   flex: 1 1 100%;
   font-size: 0.75rem;
@@ -672,5 +744,10 @@ a.task-item__id:hover {
 
   .task-list__items {
     max-height: min(16rem, calc(100vh - 16rem));
+  }
+
+  .raven-farewell {
+    padding: 1.5rem;
+    gap: 2rem;
   }
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { askJira } from '../services/jiraApi'
 import type { RavenMood } from './AnimatedLogo'
@@ -23,6 +24,7 @@ export default function BugSearchField({ onRavenMoodChange }: BugSearchFieldProp
   const [loading, setLoading] = useState(false)
   const [loadingStep, setLoadingStep] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [farewell, setFarewell] = useState(false)
   const threadRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -116,9 +118,14 @@ export default function BugSearchField({ onRavenMoodChange }: BugSearchFieldProp
     setTurns([])
     setError(null)
     setLoading(false)
+    setFarewell(false)
     onRavenMoodChange?.('idle')
     inputRef.current?.focus()
   }
+
+  const handleThanks = useCallback(() => {
+    setFarewell(true)
+  }, [])
 
   const inConversation = turns.length > 0
 
@@ -162,7 +169,7 @@ export default function BugSearchField({ onRavenMoodChange }: BugSearchFieldProp
       </label>
 
       <AnimatePresence>
-        {inConversation && (
+        {inConversation && !farewell && (
           <motion.button
             type="button"
             className="new-question-btn"
@@ -195,6 +202,9 @@ export default function BugSearchField({ onRavenMoodChange }: BugSearchFieldProp
                 onRavenMoodChange={
                   index === turns.length - 1 ? onRavenMoodChange : undefined
                 }
+                onThanks={
+                  index === turns.length - 1 && !turn.pending ? handleThanks : undefined
+                }
               />
             ))}
           </motion.div>
@@ -222,7 +232,7 @@ export default function BugSearchField({ onRavenMoodChange }: BugSearchFieldProp
             placeholder={
               inConversation
                 ? 'Ask a follow-up…'
-                : 'Have we changed Varbi login the last month?'
+                : 'Ask about a system, change, or issue…'
             }
             autoComplete="off"
             spellCheck={false}
@@ -268,6 +278,42 @@ export default function BugSearchField({ onRavenMoodChange }: BugSearchFieldProp
 
       {loading && <p className="task-list__status">{LOADING_STEPS[loadingStep]}</p>}
       {error && <p className="task-list__error">{error}</p>}
+
+      {createPortal(
+        <AnimatePresence>
+          {farewell && (
+            <motion.div
+              className="raven-farewell"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <motion.p
+                className="raven-farewell__message"
+                initial={{ opacity: 0, scale: 0.92, y: 24 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                transition={{ delay: 0.15, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+              >
+                The raven have spoken, go in peace
+              </motion.p>
+              <motion.button
+                type="button"
+                className="new-question-btn new-question-btn--farewell"
+                onClick={handleNewQuestion}
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.55, duration: 0.45 }}
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.97 }}
+              >
+                Ask a new question
+              </motion.button>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
     </motion.div>
   )
 }

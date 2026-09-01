@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http'
 import type { Plugin } from 'vite'
 import { loadEnv } from 'vite'
 
-export type TaskStatus = 'done' | 'open' | 'in-progress'
+export type TaskStatus = 'done' | 'open' | 'in-progress' | 'wont-do' | 'backlog'
 
 export interface BugTask {
   id: string
@@ -15,6 +15,9 @@ export interface BugTask {
   resolved?: string
   updatedBy?: string
   assignee?: string
+  statusName?: string
+  projectKey?: string
+  resolution?: string
 }
 
 export interface JiraIssueDetail extends BugTask {
@@ -30,7 +33,7 @@ interface JiraIssue {
   key: string
   fields: {
     summary: string
-    project: { name: string }
+    project: { key?: string; name: string }
     status: {
       name: string
       statusCategory: { key: string }
@@ -49,19 +52,42 @@ interface JiraIssue {
     resolutiondate?: string
     assignee?: { displayName?: string } | null
     reporter?: { displayName?: string } | null
+    resolution?: { name?: string } | null
   }
 }
 
-function mapStatus(statusCategoryKey: string, statusName: string): TaskStatus {
+function isWontDo(statusName: string, resolutionName: string): boolean {
+  return /won'?t\s*(do|fix)|wont\s*(be\s*)?(done|do|fix)|ei toteuteta|rejected|declined|duplicate|ignored/.test(
+    `${statusName} ${resolutionName}`.toLowerCase(),
+  )
+}
+
+function mapStatus(
+  statusCategoryKey: string,
+  statusName: string,
+  resolutionName = '',
+): TaskStatus {
+  if (isWontDo(statusName, resolutionName)) return 'wont-do'
   if (statusCategoryKey === 'done') return 'done'
 
   const normalized = statusName.toLowerCase()
   if (
     normalized.includes('progress') ||
     normalized.includes('review') ||
-    normalized.includes('development')
+    normalized.includes('development') ||
+    normalized.includes('testing') ||
+    normalized.includes('deploy')
   ) {
     return 'in-progress'
+  }
+
+  if (
+    statusCategoryKey === 'new' ||
+    /\b(backlog|to[- ]?do|todo|open|planned|icebox|parking lot|inbox|idea|not started)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'backlog'
   }
 
   return 'open'
@@ -76,23 +102,38 @@ function termClause(term: string): string {
   return `(text ~ "${escaped}" OR summary ~ "${escaped}")`
 }
 
-export function buildJql(query: string, updatedJql?: string | null): string {
+export interface JqlOptions {
+  updatedJql?: string | null
+  projectKeys?: string[]
+  statusJql?: string | null
+}
+
+export function buildJql(query: string, updatedJql?: string | null | JqlOptions): string {
+  const options: JqlOptions =
+    updatedJql && typeof updatedJql === 'object' ? updatedJql : { updatedJql: updatedJql ?? null }
   const trimmed = query.trim()
-  const restriction = updatedJql ? ` AND ${updatedJql}` : ''
+  const parts: string[] = []
 
   if (/^[A-Z][A-Z0-9]+-\d+$/i.test(trimmed)) {
-    return `key = "${trimmed.toUpperCase()}"${restriction}`
+    parts.push(`key = "${trimmed.toUpperCase()}"`)
+  } else {
+    const terms = trimmed.split(/\s+/).filter((term) => term.length > 1)
+    if (terms.length > 0) {
+      parts.push(`(${terms.map(termClause).join(' AND ')})`)
+    }
   }
 
-  const terms = trimmed.split(/\s+/).filter((term) => term.length > 1)
-  if (terms.length === 0) {
-    return updatedJql ? `${updatedJql} ORDER BY updated DESC` : 'updated >= -365d ORDER BY updated DESC'
+  if (options.projectKeys && options.projectKeys.length > 0) {
+    parts.push(`project in (${options.projectKeys.map((key) => `"${escapeJql(key)}"`).join(', ')})`)
+  }
+  if (options.statusJql) parts.push(options.statusJql)
+  if (options.updatedJql) parts.push(options.updatedJql)
+
+  if (parts.length === 0) {
+    return 'updated >= -365d ORDER BY updated DESC'
   }
 
-  const andTerms = terms.map(termClause).join(' AND ')
-  const phrase = terms.length > 1 ? ` OR ${termClause(terms.join(' '))}` : ''
-
-  return `(${andTerms}${phrase})${restriction} ORDER BY updated DESC`
+  return `${parts.join(' AND ')} ORDER BY updated DESC`
 }
 
 function jiraAuth(env: Record<string, string>) {
@@ -170,6 +211,7 @@ function mapIssue(issue: JiraIssue, baseUrl: string): JiraIssueDetail {
     status: mapStatus(
       issue.fields.status.statusCategory.key,
       issue.fields.status.name,
+      issue.fields.resolution?.name ?? '',
     ),
     url: issueUrl(baseUrl, issue.key),
     statusName: issue.fields.status.name,
@@ -183,6 +225,8 @@ function mapIssue(issue: JiraIssue, baseUrl: string): JiraIssueDetail {
     resolved: issue.fields.resolutiondate ?? '',
     assignee: issue.fields.assignee?.displayName ?? '',
     updatedBy: '',
+    projectKey: issue.fields.project.key ?? issue.key.split('-')[0],
+    resolution: issue.fields.resolution?.name ?? '',
   }
 }
 
@@ -198,6 +242,9 @@ function toBugTask(issue: JiraIssueDetail): BugTask {
     resolved: issue.resolved,
     updatedBy: issue.updatedBy,
     assignee: issue.assignee,
+    statusName: issue.statusName,
+    projectKey: issue.projectKey,
+    resolution: issue.resolution,
   }
 }
 
@@ -210,7 +257,7 @@ export async function searchJiraByJql(
   const params = new URLSearchParams({
     jql,
     maxResults: String(maxResults),
-    fields: 'summary,status,project,issuetype,priority,description,comment,created,updated,resolutiondate,assignee,reporter',
+    fields: 'summary,status,project,issuetype,priority,description,comment,created,updated,resolutiondate,assignee,reporter,resolution',
   })
 
   const response = await fetch(`${baseUrl}/rest/api/3/search/jql?${params}`, {
@@ -230,9 +277,46 @@ export async function searchJiraIssuesDetailed(
   query: string,
   env: Record<string, string>,
   maxResults = 20,
-  updatedJql?: string | null,
+  options?: string | null | JqlOptions,
 ): Promise<JiraIssueDetail[]> {
-  return searchJiraByJql(buildJql(query, updatedJql), env, maxResults)
+  const jqlOptions: JqlOptions =
+    options && typeof options === 'object' ? options : { updatedJql: options ?? null }
+  return searchJiraByJql(buildJql(query, jqlOptions), env, maxResults)
+}
+
+let projectCache: { key: string; name: string }[] | null = null
+
+export async function listJiraProjects(
+  env: Record<string, string>,
+): Promise<{ key: string; name: string }[]> {
+  if (projectCache) return projectCache
+
+  const { baseUrl, headers } = jiraAuth(env)
+  const projects: { key: string; name: string }[] = []
+  let startAt = 0
+
+  while (true) {
+    const params = new URLSearchParams({
+      maxResults: '100',
+      startAt: String(startAt),
+    })
+    const response = await fetch(`${baseUrl}/rest/api/3/project/search?${params}`, { headers })
+    if (!response.ok) break
+
+    const data = (await response.json()) as {
+      values?: Array<{ key?: string; name?: string }>
+      isLast?: boolean
+    }
+    const batch = data.values ?? []
+    for (const project of batch) {
+      if (project.key && project.name) projects.push({ key: project.key, name: project.name })
+    }
+    if (data.isLast || batch.length === 0) break
+    startAt += batch.length
+  }
+
+  projectCache = projects
+  return projects
 }
 
 export interface IssueChangeInfo {

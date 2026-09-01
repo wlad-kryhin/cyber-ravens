@@ -21,13 +21,19 @@ interface AskAnswerProps {
   turn: ChatTurnView
   onProgress?: () => void
   onRavenMoodChange?: (mood: RavenMood) => void
+  onThanks?: () => void
 }
 
 const CHARS_PER_TICK = 2
 const TICK_MS = 24
 const TALKING_HOLD_MS = 2200
 
-export default function AskAnswer({ turn, onProgress, onRavenMoodChange }: AskAnswerProps) {
+export default function AskAnswer({
+  turn,
+  onProgress,
+  onRavenMoodChange,
+  onThanks,
+}: AskAnswerProps) {
   return (
     <motion.article
       className="chat-turn"
@@ -46,6 +52,7 @@ export default function AskAnswer({ turn, onProgress, onRavenMoodChange }: AskAn
           turn={turn}
           onProgress={onProgress}
           onRavenMoodChange={onRavenMoodChange}
+          onThanks={onThanks}
         />
       )}
     </motion.article>
@@ -64,7 +71,7 @@ function PendingAnswer({
   return <p className="chat-turn__pending">Looking through Jira and Confluence…</p>
 }
 
-function TypedAnswer({ turn, onProgress, onRavenMoodChange }: AskAnswerProps) {
+function TypedAnswer({ turn, onProgress, onRavenMoodChange, onThanks }: AskAnswerProps) {
   const [count, setCount] = useState(0)
   const visible = turn.answer.slice(0, count)
   const typing = count < turn.answer.length
@@ -127,13 +134,27 @@ function TypedAnswer({ turn, onProgress, onRavenMoodChange }: AskAnswerProps) {
             }
           />
           <DocList
-            docs={turn.docs}
+            docs={turn.docs ?? []}
             header={
-              turn.docs.length > 0
+              (turn.docs?.length ?? 0) > 0
                 ? `${turn.docs.length} related Confluence page${turn.docs.length !== 1 ? 's' : ''}`
                 : undefined
             }
           />
+          {onThanks && (
+            <motion.button
+              type="button"
+              className="thanks-btn"
+              onClick={onThanks}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.35 }}
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+            >
+              Thanks
+            </motion.button>
+          )}
         </>
       )}
     </>
