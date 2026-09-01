@@ -5,6 +5,10 @@ export interface BugTask {
   title: string
   product: string
   status: TaskStatus
+  url?: string
+  created?: string
+  updated?: string
+  resolved?: string
 }
 
 export const statusLabels: Record<TaskStatus, string> = {
