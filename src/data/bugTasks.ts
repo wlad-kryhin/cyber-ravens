@@ -9,6 +9,8 @@ export interface BugTask {
   created?: string
   updated?: string
   resolved?: string
+  updatedBy?: string
+  assignee?: string
 }
 
 export const statusLabels: Record<TaskStatus, string> = {

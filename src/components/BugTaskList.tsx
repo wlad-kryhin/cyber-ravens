@@ -83,7 +83,13 @@ function TaskRow({ task }: { task: BugTask }) {
         <span className="task-item__id">{task.id}</span>
         <span className="task-item__product">{task.product}</span>
         {task.updated && (
-          <span className="task-item__updated">Updated {task.updated.slice(0, 10)}</span>
+          <span className="task-item__updated">
+            Updated {task.updated.slice(0, 10)}
+            {task.updatedBy ? ` by ${task.updatedBy}` : ''}
+          </span>
+        )}
+        {task.assignee && (
+          <span className="task-item__assignee">Assignee {task.assignee}</span>
         )}
         <span className="task-item__title">{task.title}</span>
       </div>

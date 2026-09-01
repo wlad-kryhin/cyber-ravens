@@ -1,20 +1,20 @@
 import { useState } from 'react'
 import AnimatedBackground from './components/AnimatedBackground'
-import AnimatedLogo from './components/AnimatedLogo'
+import AnimatedLogo, { type RavenMood } from './components/AnimatedLogo'
 import BugSearchField from './components/BugSearchField'
 import FlyingTalentechLogos from './components/FlyingTalentechLogos'
 import './App.css'
 
 function App() {
-  const [talking, setTalking] = useState(false)
+  const [ravenMood, setRavenMood] = useState<RavenMood>('idle')
 
   return (
     <div className="app">
       <AnimatedBackground />
       <FlyingTalentechLogos />
-      <AnimatedLogo talking={talking} />
+      <AnimatedLogo mood={ravenMood} />
       <main className="main">
-        <BugSearchField onTalkingChange={setTalking} />
+        <BugSearchField onRavenMoodChange={setRavenMood} />
       </main>
     </div>
   )

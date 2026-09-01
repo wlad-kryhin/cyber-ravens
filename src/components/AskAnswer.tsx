@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import type { BugTask } from '../data/bugTasks'
+import type { ConfluenceDoc } from '../data/docs'
+import type { RavenMood } from './AnimatedLogo'
 import BugTaskList from './BugTaskList'
+import DocList from './DocList'
 
 export interface ChatTurnView {
   id: string
@@ -10,20 +13,21 @@ export interface ChatTurnView {
   queries: string[]
   timeLabel: string | null
   tasks: BugTask[]
+  docs: ConfluenceDoc[]
   pending?: boolean
 }
 
 interface AskAnswerProps {
   turn: ChatTurnView
   onProgress?: () => void
-  onTalkingChange?: (talking: boolean) => void
+  onRavenMoodChange?: (mood: RavenMood) => void
 }
 
 const CHARS_PER_TICK = 2
 const TICK_MS = 24
 const TALKING_HOLD_MS = 2200
 
-export default function AskAnswer({ turn, onProgress, onTalkingChange }: AskAnswerProps) {
+export default function AskAnswer({ turn, onProgress, onRavenMoodChange }: AskAnswerProps) {
   return (
     <motion.article
       className="chat-turn"
@@ -35,13 +39,13 @@ export default function AskAnswer({ turn, onProgress, onTalkingChange }: AskAnsw
       <p className="chat-turn__question">{turn.question}</p>
 
       {turn.pending ? (
-        <PendingAnswer onTalkingChange={onTalkingChange} />
+        <PendingAnswer onRavenMoodChange={onRavenMoodChange} />
       ) : (
         <TypedAnswer
           key={`${turn.id}-${turn.answer}`}
           turn={turn}
           onProgress={onProgress}
-          onTalkingChange={onTalkingChange}
+          onRavenMoodChange={onRavenMoodChange}
         />
       )}
     </motion.article>
@@ -49,20 +53,19 @@ export default function AskAnswer({ turn, onProgress, onTalkingChange }: AskAnsw
 }
 
 function PendingAnswer({
-  onTalkingChange,
+  onRavenMoodChange,
 }: {
-  onTalkingChange?: (talking: boolean) => void
+  onRavenMoodChange?: (mood: RavenMood) => void
 }) {
   useEffect(() => {
-    onTalkingChange?.(true)
-  }, [onTalkingChange])
+    onRavenMoodChange?.('thinking')
+  }, [onRavenMoodChange])
 
-  return <p className="chat-turn__pending">Looking through Jira…</p>
+  return <p className="chat-turn__pending">Looking through Jira and Confluence…</p>
 }
 
-function TypedAnswer({ turn, onProgress, onTalkingChange }: AskAnswerProps) {
+function TypedAnswer({ turn, onProgress, onRavenMoodChange }: AskAnswerProps) {
   const [count, setCount] = useState(0)
-  const [talking, setTalking] = useState(true)
   const visible = turn.answer.slice(0, count)
   const typing = count < turn.answer.length
 
@@ -79,20 +82,18 @@ function TypedAnswer({ turn, onProgress, onTalkingChange }: AskAnswerProps) {
   }, [turn.answer])
 
   useEffect(() => {
-    if (typing) return
+    if (typing) {
+      onRavenMoodChange?.('talking')
+      return
+    }
 
-    const hold = window.setTimeout(() => setTalking(false), TALKING_HOLD_MS)
+    const hold = window.setTimeout(() => onRavenMoodChange?.('idle'), TALKING_HOLD_MS)
     return () => window.clearTimeout(hold)
-  }, [typing])
+  }, [typing, onRavenMoodChange])
 
   useEffect(() => {
     onProgress?.()
   }, [count, onProgress])
-
-  useEffect(() => {
-    onTalkingChange?.(talking)
-    return () => onTalkingChange?.(false)
-  }, [talking, onTalkingChange])
 
   return (
     <>
@@ -105,7 +106,7 @@ function TypedAnswer({ turn, onProgress, onTalkingChange }: AskAnswerProps) {
         <>
           {(turn.queries.length > 0 || turn.timeLabel) && (
             <p className="ask-answer__queries">
-              <span>Searched Jira for</span>
+              <span>Searched Jira and Confluence for</span>
               {turn.queries.map((query) => (
                 <span key={query} className="ask-answer__chip">
                   {query}
@@ -122,6 +123,14 @@ function TypedAnswer({ turn, onProgress, onTalkingChange }: AskAnswerProps) {
             header={
               turn.tasks.length > 0
                 ? `${turn.tasks.length} related Jira issue${turn.tasks.length !== 1 ? 's' : ''}`
+                : undefined
+            }
+          />
+          <DocList
+            docs={turn.docs}
+            header={
+              turn.docs.length > 0
+                ? `${turn.docs.length} related Confluence page${turn.docs.length !== 1 ? 's' : ''}`
                 : undefined
             }
           />

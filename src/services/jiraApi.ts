@@ -1,4 +1,5 @@
 import type { BugTask } from '../data/bugTasks'
+import type { ConfluenceDoc } from '../data/docs'
 
 interface JiraSearchResponse {
   tasks?: BugTask[]
@@ -8,6 +9,11 @@ interface JiraSearchResponse {
 export interface ConversationTurn {
   question: string
   answer: string
+  queries?: string[]
+  timeLabel?: string | null
+  products?: string[]
+  issueKeys?: string[]
+  docTitles?: string[]
 }
 
 export interface AskResult {
@@ -15,6 +21,7 @@ export interface AskResult {
   queries: string[]
   timeLabel: string | null
   tasks: BugTask[]
+  docs: ConfluenceDoc[]
 }
 
 interface AskResponse extends Partial<AskResult> {
@@ -55,5 +62,6 @@ export async function askJira(
     queries: data.queries ?? [],
     timeLabel: data.timeLabel ?? null,
     tasks: data.tasks ?? [],
+    docs: data.docs ?? [],
   }
 }

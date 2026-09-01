@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { askJira } from '../services/jiraApi'
+import type { RavenMood } from './AnimatedLogo'
 import AskAnswer, { type ChatTurnView } from './AskAnswer'
 
 const LABEL = 'Ask the Raven'
 const MIN_QUERY_LENGTH = 2
 const LOADING_STEPS = [
   'Breaking down the question…',
-  'Searching Jira…',
+  'Searching Jira and Confluence…',
   'Formulating an answer…',
 ]
 
 interface BugSearchFieldProps {
-  onTalkingChange?: (talking: boolean) => void
+  onRavenMoodChange?: (mood: RavenMood) => void
 }
 
-export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps) {
+export default function BugSearchField({ onRavenMoodChange }: BugSearchFieldProps) {
   const [value, setValue] = useState('')
   const [focused, setFocused] = useState(false)
   const [turns, setTurns] = useState<ChatTurnView[]>([])
@@ -53,13 +54,21 @@ export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps)
 
     const history = turns
       .filter((turn) => turn.answer)
-      .map((turn) => ({ question: turn.question, answer: turn.answer }))
+      .map((turn) => ({
+        question: turn.question,
+        answer: turn.answer,
+        queries: turn.queries,
+        timeLabel: turn.timeLabel,
+        products: [...new Set(turn.tasks.map((task) => task.product).filter(Boolean))],
+        issueKeys: turn.tasks.map((task) => task.id),
+        docTitles: turn.docs.map((doc) => doc.title),
+      }))
     const turnId = `${Date.now()}-${turns.length}`
 
     setLoading(true)
     setLoadingStep(0)
     setError(null)
-    onTalkingChange?.(true)
+    onRavenMoodChange?.('thinking')
     setValue('')
     setTurns((current) => [
       ...current,
@@ -70,6 +79,7 @@ export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps)
         queries: [],
         timeLabel: null,
         tasks: [],
+        docs: [],
         pending: true,
       },
     ])
@@ -85,6 +95,7 @@ export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps)
                 queries: result.queries,
                 timeLabel: result.timeLabel,
                 tasks: result.tasks,
+                docs: result.docs,
                 pending: false,
               }
             : turn,
@@ -94,7 +105,7 @@ export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps)
       setTurns((current) => current.filter((turn) => turn.id !== turnId))
       setValue(nextQuestion)
       setError(err instanceof Error ? err.message : 'Failed to ask Jira')
-      onTalkingChange?.(false)
+      onRavenMoodChange?.('idle')
     } finally {
       setLoading(false)
     }
@@ -105,7 +116,7 @@ export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps)
     setTurns([])
     setError(null)
     setLoading(false)
-    onTalkingChange?.(false)
+    onRavenMoodChange?.('idle')
     inputRef.current?.focus()
   }
 
@@ -181,8 +192,8 @@ export default function BugSearchField({ onTalkingChange }: BugSearchFieldProps)
                 key={turn.id}
                 turn={turn}
                 onProgress={scrollThread}
-                onTalkingChange={
-                  index === turns.length - 1 ? onTalkingChange : undefined
+                onRavenMoodChange={
+                  index === turns.length - 1 ? onRavenMoodChange : undefined
                 }
               />
             ))}

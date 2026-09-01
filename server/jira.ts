@@ -13,6 +13,8 @@ export interface BugTask {
   created?: string
   updated?: string
   resolved?: string
+  updatedBy?: string
+  assignee?: string
 }
 
 export interface JiraIssueDetail extends BugTask {
@@ -45,6 +47,8 @@ interface JiraIssue {
     created?: string
     updated?: string
     resolutiondate?: string
+    assignee?: { displayName?: string } | null
+    reporter?: { displayName?: string } | null
   }
 }
 
@@ -177,6 +181,8 @@ function mapIssue(issue: JiraIssue, baseUrl: string): JiraIssueDetail {
     created: issue.fields.created ?? '',
     updated: issue.fields.updated ?? '',
     resolved: issue.fields.resolutiondate ?? '',
+    assignee: issue.fields.assignee?.displayName ?? '',
+    updatedBy: '',
   }
 }
 
@@ -190,6 +196,8 @@ function toBugTask(issue: JiraIssueDetail): BugTask {
     created: issue.created,
     updated: issue.updated,
     resolved: issue.resolved,
+    updatedBy: issue.updatedBy,
+    assignee: issue.assignee,
   }
 }
 
@@ -202,7 +210,7 @@ export async function searchJiraByJql(
   const params = new URLSearchParams({
     jql,
     maxResults: String(maxResults),
-    fields: 'summary,status,project,issuetype,priority,description,comment,created,updated,resolutiondate',
+    fields: 'summary,status,project,issuetype,priority,description,comment,created,updated,resolutiondate,assignee,reporter',
   })
 
   const response = await fetch(`${baseUrl}/rest/api/3/search/jql?${params}`, {
@@ -227,23 +235,32 @@ export async function searchJiraIssuesDetailed(
   return searchJiraByJql(buildJql(query, updatedJql), env, maxResults)
 }
 
+export interface IssueChangeInfo {
+  lines: string[]
+  lastChangedBy: string
+  lastChangedAt: string
+}
+
 export async function fetchRecentChanges(
   key: string,
   env: Record<string, string>,
   sinceDays?: number,
-): Promise<string[]> {
+): Promise<IssueChangeInfo> {
   const { baseUrl, headers } = jiraAuth(env)
   const response = await fetch(
-    `${baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}?expand=changelog&fields=updated`,
+    `${baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}?expand=changelog&fields=updated,assignee`,
     { headers },
   )
 
-  if (!response.ok) return []
+  if (!response.ok) {
+    return { lines: [], lastChangedBy: '', lastChangedAt: '' }
+  }
 
   const data = (await response.json()) as {
     changelog?: {
       histories?: Array<{
         created?: string
+        author?: { displayName?: string }
         items?: Array<{ field?: string; fromString?: string | null; toString?: string | null }>
       }>
     }
@@ -254,22 +271,35 @@ export async function fetchRecentChanges(
     : null
   const watched = new Set(['status', 'resolution', 'summary', 'assignee', 'Fix Version', 'labels'])
   const lines: string[] = []
+  let lastChangedBy = ''
+  let lastChangedAt = ''
 
   for (const history of data.changelog?.histories ?? []) {
     const created = history.created ?? ''
     const at = created ? new Date(created).getTime() : 0
     if (since && at && at < since) continue
 
+    const author = history.author?.displayName?.trim() ?? ''
+    if (author) {
+      lastChangedBy = author
+      lastChangedAt = created
+    }
+
     for (const item of history.items ?? []) {
       if (!item.field || !watched.has(item.field)) continue
       const day = created ? created.slice(0, 10) : 'unknown date'
+      const who = author || 'Unknown'
       const from = item.fromString?.trim() || '—'
       const to = item.toString?.trim() || '—'
-      lines.push(`${day}: ${item.field} ${from} → ${to}`)
+      lines.push(`${day}: ${who} changed ${item.field} ${from} → ${to}`)
     }
   }
 
-  return lines.slice(-6)
+  return {
+    lines: lines.slice(-6),
+    lastChangedBy,
+    lastChangedAt,
+  }
 }
 
 export async function searchJiraIssues(
